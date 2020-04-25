@@ -1,0 +1,11 @@
+[package]
+name = "rabid-control"
+version = "0.1.0"
+authors = ["Diez B. Roggisch <deets@web.de>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+linux-embedded-hal = "0.3.0"
+i2cdev = "0.4.4"
