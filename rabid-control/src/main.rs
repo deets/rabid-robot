@@ -5,6 +5,9 @@ use std::time::Duration;
 use i2cdev::core::I2CDevice;
 use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 
+mod path;
+use path::LinearSegment;
+
 const MD23_ADDR: u16 = 0x58;
 
 enum Message
@@ -108,7 +111,6 @@ fn output_state(states: &Vec<State>)
 fn main() {
     let mut md23 = MD23Driver::new(MD23_ADDR);
     loop {
-        thread::sleep(Duration::from_millis(2000));
         let res = md23.drive(0.5);
         output_state(&res);
         thread::sleep(Duration::from_millis(2000));
@@ -118,5 +120,6 @@ fn main() {
         md23.drive(-0.5);
         thread::sleep(Duration::from_millis(2000));
         md23.stop();
+        thread::sleep(Duration::from_millis(2000));
     }
 }
