@@ -1,8 +1,6 @@
 extern crate nalgebra as na;
 use na::{Vector2, Rotation2};
-use std::f64::consts::PI;
 use std::fmt;
-use std::cmp::Ordering;
 
 pub type Vector = Vector2<f64>;
 pub type Rotation = Rotation2<f64>;
@@ -85,7 +83,7 @@ impl PathSegment for CircleSegment
 
 struct CompoundPathSegment
 {
-    segment: Box<PathSegment>,
+    segment: Box<dyn PathSegment>,
     // where this segment starts, concatenated
     // to the previous one
     pos: Vector,
@@ -126,7 +124,7 @@ impl CompoundPath {
     }
 
 
-    fn push(&mut self, segment: Box<PathSegment>)
+    fn push(&mut self, segment: Box<dyn PathSegment>)
     {
         self.segments.push(CompoundPathSegment{
             segment: segment,
@@ -189,6 +187,7 @@ impl PathSegment for CompoundPath
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     fn equal_eps(a: &Vector, b: &Vector, e: f64) -> bool
     {
