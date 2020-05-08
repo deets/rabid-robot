@@ -15,17 +15,11 @@ enum Message
     Drive{speed: f32},
 }
 
-enum Mode
-{
-    Normal,
-    LowVoltage,
-    Error
-}
-
+#[derive(Clone, Copy)]
 pub enum State {
-    Battery{voltage: f32},
+    Normal{voltage: f32},
+    LowVoltage,
     Error,
-    LowVoltage
 }
 
 pub struct MD23Driver {
@@ -38,11 +32,12 @@ impl MD23Driver {
     fn start_thread(
         rx: std::sync::mpsc::Receiver<Message>,
         tx: std::sync::mpsc::Sender<State>,
-        addr: u16
+        addr: u16,
+        battery_cell_count: u8
     )
     {
         thread::spawn(move || {
-            let mut mode = Mode::Normal;
+            let mut state = State::Normal{voltage: -1.0};
             let mut dev = match LinuxI2CDevice::new("/dev/i2c-1", addr)
             {
                 Ok(dev) => dev,
@@ -50,8 +45,8 @@ impl MD23Driver {
             };
 
             loop {
-                match mode {
-                    Mode::Normal => {
+                match state {
+                    State::Normal{voltage} => {
                         for message in rx.try_iter()
                         {
                             match message {
@@ -66,7 +61,7 @@ impl MD23Driver {
                                     match foo()
                                     {
                                         Ok(_) => {}
-                                        Err(_) => { mode = Mode::Error; }
+                                        Err(_) => { state = State::Error; }
                                     }
                                 }
                             }
@@ -75,31 +70,30 @@ impl MD23Driver {
                             Ok(voltage) => voltage as f32,
                             Err(err) => panic!("error reading battery: {}", err)
                         } / 10.0;
-                        tx.send(State::Battery{voltage: voltage}).expect("thread error");
-                        if voltage < 3.3 {
-                            mode = Mode::LowVoltage;
+                        if voltage < 3.3 * battery_cell_count as f32 {
+                            state = State::LowVoltage;
+                        } else {
                         }
+                        state = State::Normal{voltage: voltage};
                     },
-                    Mode::LowVoltage =>
+                    State::LowVoltage =>
                     {
-                        tx.send(State::LowVoltage{}).expect("thread error");
                     }
-                    Mode::Error => {
-                        tx.send(State::Error{}).expect("thread error");
+                    State::Error => {
                     }
-
                 }
+                tx.send(state).expect("thread error");
                 thread::sleep(Duration::from_millis(100));
             }
         });
     }
 
-    pub fn new() -> MD23Driver
+    pub fn new(battery_cell_count: u8) -> MD23Driver
     {
         let addr = MD23_ADDR;
         let (tx, rx) = mpsc::channel();
         let (tx_incoming, rx_incoming) = mpsc::channel();
-        MD23Driver::start_thread(rx, tx_incoming, addr);
+        MD23Driver::start_thread(rx, tx_incoming, addr, battery_cell_count);
         MD23Driver{
             outgoing: tx,
             incoming: rx_incoming

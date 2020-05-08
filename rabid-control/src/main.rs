@@ -11,7 +11,7 @@ fn output_state(states: &Vec<State>)
 {
     for state in states.iter() {
         match state {
-            State::Battery{voltage} => println!("voltage: {}", voltage),
+            State::Normal{voltage} => println!("voltage: {}", voltage),
             State::Error => panic!("Error in I2C communication"),
             State::LowVoltage => panic!("Robot running low on battery")
         }
@@ -19,7 +19,7 @@ fn output_state(states: &Vec<State>)
 }
 
 fn main() {
-    let mut md23 = MD23Driver::new();
+    let mut md23 = MD23Driver::new(3);
     loop {
         let res = md23.drive(0.5);
         output_state(&res);
