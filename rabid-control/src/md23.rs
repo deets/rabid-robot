@@ -9,6 +9,9 @@ use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 
 
 const MD23_ADDR: u16 = 0x58;
+const MD23_SPEED1: u8 = 0;
+const MD23_SPEED2: u8 = 1;
+const MD23_VOLTAGE: u8 = 10;
 
 enum Message
 {
@@ -29,6 +32,17 @@ pub struct MD23Driver {
 
 impl MD23Driver {
 
+    fn read_state(dev: &mut LinuxI2CDevice, battery_cell_count: u8) -> Result<State, LinuxI2CError>
+    {
+        let voltage = dev.smbus_read_byte_data(MD23_VOLTAGE)?;
+        let voltage = voltage as f32 / 10.0;
+        if voltage < 3.3 * battery_cell_count as f32 {
+            return Ok(State::LowVoltage);
+        } else {
+            return Ok(State::Normal{voltage: voltage})
+        }
+    }
+
     fn start_thread(
         rx: std::sync::mpsc::Receiver<Message>,
         tx: std::sync::mpsc::Sender<State>,
@@ -37,7 +51,6 @@ impl MD23Driver {
     )
     {
         thread::spawn(move || {
-            let mut state = State::Normal{voltage: -1.0};
             let mut dev = match LinuxI2CDevice::new("/dev/i2c-1", addr)
             {
                 Ok(dev) => dev,
@@ -45,8 +58,14 @@ impl MD23Driver {
             };
 
             loop {
+                let mut state = match MD23Driver::read_state(&mut dev, battery_cell_count)
+                {
+                    Ok(state) => state,
+                    Err(_) => State::Error
+                };
+
                 match state {
-                    State::Normal{voltage} => {
+                    State::Normal{..} => {
                         for message in rx.try_iter()
                         {
                             match message {
@@ -54,8 +73,8 @@ impl MD23Driver {
                                     let speed = (speed * 127.0 + 128.0) as u8;
                                     let mut foo = || -> Result<(), LinuxI2CError>
                                     {
-                                        dev.smbus_write_byte_data(0, speed)?;
-                                        dev.smbus_write_byte_data(1, speed)?;
+                                        dev.smbus_write_byte_data(MD23_SPEED1, speed)?;
+                                        dev.smbus_write_byte_data(MD23_SPEED2, speed)?;
                                         Ok(())
                                     };
                                     match foo()
@@ -66,15 +85,6 @@ impl MD23Driver {
                                 }
                             }
                         }
-                        let voltage = match dev.smbus_read_byte_data(10) {
-                            Ok(voltage) => voltage as f32,
-                            Err(err) => panic!("error reading battery: {}", err)
-                        } / 10.0;
-                        if voltage < 3.3 * battery_cell_count as f32 {
-                            state = State::LowVoltage;
-                        } else {
-                        }
-                        state = State::Normal{voltage: voltage};
                     },
                     State::LowVoltage =>
                     {
