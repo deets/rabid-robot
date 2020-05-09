@@ -2,7 +2,8 @@
 //
 use std::thread;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use byteorder::{ByteOrder, BigEndian};
 
 use i2cdev::core::I2CDevice;
 use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
@@ -11,18 +12,33 @@ use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 const MD23_ADDR: u16 = 0x58;
 const MD23_SPEED1: u8 = 0;
 const MD23_SPEED2: u8 = 1;
+const MD23_ENC1: u8 = 2;
+const MD23_ENC2: u8 = 6;
 const MD23_VOLTAGE: u8 = 10;
+const MD23_ENCODER_STEPS_PER_REVOLUTION: f32 = 360.0;
 
 enum Message
 {
     Drive{speed: f32},
+    Shutdown
 }
 
 #[derive(Clone, Copy)]
 pub enum State {
-    Normal{voltage: f32},
+    Normal
+    {
+        when: Instant,
+        voltage: f32,
+        enc1: u32,
+        enc2: u32,
+        diff1: i32,
+        diff2: i32,
+        speed1: f32,
+        speed2: f32,
+    },
     LowVoltage,
     Error,
+    Shutdown,
 }
 
 pub struct MD23Driver {
@@ -32,14 +48,50 @@ pub struct MD23Driver {
 
 impl MD23Driver {
 
-    fn read_state(dev: &mut LinuxI2CDevice, battery_cell_count: u8) -> Result<State, LinuxI2CError>
+    fn read_encoder(dev: &mut LinuxI2CDevice, address: u8) -> Result<u32, LinuxI2CError>
     {
+        let mut vec = Vec::new();
+        for i in 0..4 {
+            vec.push(dev.smbus_read_byte_data(address + i)?);
+        }
+        Ok(BigEndian::read_u32(&vec))
+    }
+
+    fn compute_state(dev: &mut LinuxI2CDevice, battery_cell_count: u8, previous_state: &State) -> Result<State, LinuxI2CError>
+    {
+        let now = Instant::now();
+        let new_enc1 = MD23Driver::read_encoder(dev, MD23_ENC1)?;
+        let new_enc2 = MD23Driver::read_encoder(dev, MD23_ENC2)?;
+        let mut diff1 = 0;
+        let mut diff2 = 0;
+        let mut speed1 = 0.0;
+        let mut speed2 = 0.0;
+
+        if let State::Normal{enc1, enc2, when, ..} = previous_state {
+             let time_delta = now.duration_since(*when).as_secs_f32();
+             diff1 = encoder_diff(&new_enc1, enc1);
+             diff2 = encoder_diff(&new_enc2, enc2);
+             speed1 = diff1 as f32 / (time_delta * MD23_ENCODER_STEPS_PER_REVOLUTION);
+             speed2 = diff2 as f32 / (time_delta * MD23_ENCODER_STEPS_PER_REVOLUTION);
+        }
+
         let voltage = dev.smbus_read_byte_data(MD23_VOLTAGE)?;
         let voltage = voltage as f32 / 10.0;
         if voltage < 3.3 * battery_cell_count as f32 {
             return Ok(State::LowVoltage);
         } else {
-            return Ok(State::Normal{voltage: voltage})
+            return Ok(State::Normal
+                      {
+                          when: now,
+                          voltage: voltage,
+                          enc1: new_enc1,
+                          enc2: new_enc2,
+                          diff1: diff1,
+                          diff2: diff2,
+                          speed1: speed1,
+                          speed2: speed2,
+                      }
+            )
         }
     }
 
@@ -56,9 +108,19 @@ impl MD23Driver {
                 Ok(dev) => dev,
                 Err(err) => panic!("oh no {}", err)
             };
+            let mut state = State::Normal{
+                when: Instant::now(),
+                voltage: -1.0,
+                enc1: 0,
+                enc2: 0,
+                diff1: 0,
+                diff2: 0,
+                speed1: 0.0,
+                speed2: 0.0,
 
+            };
             loop {
-                let mut state = match MD23Driver::read_state(&mut dev, battery_cell_count)
+                state = match MD23Driver::compute_state(&mut dev, battery_cell_count, &state)
                 {
                     Ok(state) => state,
                     Err(_) => State::Error
@@ -82,6 +144,9 @@ impl MD23Driver {
                                         Ok(_) => {}
                                         Err(_) => { state = State::Error; }
                                     }
+                                },
+                                Message::Shutdown => {
+                                    state = State::Shutdown;
                                 }
                             }
                         }
@@ -90,6 +155,9 @@ impl MD23Driver {
                     {
                     }
                     State::Error => {
+                    }
+                    State::Shutdown => {
+                        break;
                     }
                 }
                 tx.send(state).expect("thread error");
@@ -128,4 +196,52 @@ impl MD23Driver {
         self.outgoing.send(Message::Drive{speed: 0.0}).expect("thread error");
         self.gather_state_messages()
     }
+
+    pub fn state(self: &mut MD23Driver) -> Vec<State>
+    {
+        self.gather_state_messages()
+    }
+
+    pub fn shutdown(self: &mut MD23Driver)
+    {
+        self.stop();
+        self.outgoing.send(Message::Shutdown).expect("thread error");
+        loop {
+            for message in self.incoming.iter() {
+                if let State::Shutdown = message {
+                    return;
+                }
+            }
+        }
+    }
+
+}
+
+fn encoder_diff(a: &u32, b: &u32) -> i32
+{
+    let a = *a as i64;
+    let b = *b as i64;
+    (a - b) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoder_diff_simple() {
+        let a = 26858;
+        let b = 26980;
+        assert_eq!(encoder_diff(&b, &a), 26980 - 26858);
+        assert_eq!(encoder_diff(&a, &b), 26858 - 26980);
+    }
+
+    #[test]
+    fn encoder_diff_with_overrun() {
+        let a = 0;
+        let b = 4294967295;
+        assert_eq!(encoder_diff(&a, &b), 1);
+        assert_eq!(encoder_diff(&b, &a), -1);
+    }
+
 }
