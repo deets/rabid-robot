@@ -1,10 +1,39 @@
+use std::thread;
 use std::time::Duration;
 use crossbeam_channel::{bounded, tick, Receiver, select};
+use serde::{Serialize, Deserialize};
+use nanomsg::{Socket, Protocol, Error};
+use std::io::{Read};
 
 mod md23;
 use md23::{MD23Driver, State};
 
 mod path;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct AxisMovement {
+    axis: u8,
+    value: i16,
+}
+
+
+fn open_socket(addr: &str) -> Result<Receiver<AxisMovement>, Error> {
+    let mut socket = Socket::new(Protocol::Pair)?;
+    socket.bind(addr)?;
+
+    let (sender, receiver) = bounded(100);
+
+    thread::spawn(move || {
+        loop {
+            let mut buffer = Vec::new();
+            socket.read_to_end(&mut buffer).expect("Nanomsg Socket Error");
+            let json = String::from_utf8(buffer).unwrap();
+            let axis_movment: AxisMovement = serde_json::from_str(&json).unwrap();
+            sender.send(axis_movment).expect("sending failed");
+        }
+    });
+    Ok(receiver)
+}
 
 
 fn output_state(states: &Vec<State>)
@@ -32,9 +61,8 @@ fn main()
 {
     let ctrl_c_events = ctrl_channel().expect("SIGINT handler error");
     let mut md23 = MD23Driver::new(3);
-    md23.drive(1.0);
     let ticks = tick(Duration::from_millis(100));
-
+    let axis_receiver = open_socket("tcp://0.0.0.0:5000").expect("Socket error");
     loop {
         select! {
             recv(ticks) -> _ => {
@@ -45,6 +73,21 @@ fn main()
                 println!("Got SIGINT - goodbye!");
                 md23.shutdown();
                 break;
+            },
+            recv(axis_receiver) -> message =>
+            {
+                let AxisMovement{ axis, value} = message.expect("no axis message");
+                if axis == 1 {
+                    let dead_zone = 10_000;
+                    if value > dead_zone || value < -dead_zone {
+                        let speed = -(value as f32 / 32768.0);
+                        md23.drive(speed);
+                    } else {
+                        md23.stop();
+                    }
+
+                }
+                println!("axis {} moves {}", axis, value);
             }
         }
     }

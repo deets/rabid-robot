@@ -8,3 +8,6 @@ edition = "2018"
 
 [dependencies]
 sdl2 = ""
+nanomsg = ""
+serde = { version = "1.0.110", features = ["derive"] }
+serde_json = "1.0"

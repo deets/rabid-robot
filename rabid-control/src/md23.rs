@@ -33,7 +33,7 @@ pub enum State {
         enc2: u32,
         diff1: i32,
         diff2: i32,
-        speed1: f32,
+        speed1: f32,    // Given in revolutions/second, sign indicates direction
         speed2: f32,
     },
     LowVoltage,
