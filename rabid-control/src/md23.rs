@@ -12,6 +12,7 @@ use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 const MD23_ADDR: u16 = 0x58;
 const MD23_SPEED1: u8 = 0;
 const MD23_SPEED2: u8 = 1;
+const MD23_MODE: u8 = 15;
 const MD23_ENC1: u8 = 2;
 const MD23_ENC2: u8 = 6;
 const MD23_VOLTAGE: u8 = 10;
@@ -19,7 +20,7 @@ const MD23_ENCODER_STEPS_PER_REVOLUTION: f32 = 360.0;
 
 enum Message
 {
-    Drive{speed: f32},
+    Drive{speed: f32, turn: f32},
     Shutdown
 }
 
@@ -103,11 +104,8 @@ impl MD23Driver {
     )
     {
         thread::spawn(move || {
-            let mut dev = match LinuxI2CDevice::new("/dev/i2c-1", addr)
-            {
-                Ok(dev) => dev,
-                Err(err) => panic!("oh no {}", err)
-            };
+            let mut dev = LinuxI2CDevice::new("/dev/i2c-1", addr).expect("MD23 I2C error");
+            dev.smbus_write_byte_data(MD23_MODE, 2).expect("setting mode failed");
             let mut state = State::Normal{
                 when: Instant::now(),
                 voltage: -1.0,
@@ -131,12 +129,13 @@ impl MD23Driver {
                         for message in rx.try_iter()
                         {
                             match message {
-                                Message::Drive{speed} => {
+                                Message::Drive{speed, turn} => {
                                     let speed = (speed * 127.0 + 128.0) as u8;
+                                    let turn = (turn * 127.0 + 128.0) as u8;
                                     let mut foo = || -> Result<(), LinuxI2CError>
                                     {
                                         dev.smbus_write_byte_data(MD23_SPEED1, speed)?;
-                                        dev.smbus_write_byte_data(MD23_SPEED2, speed)?;
+                                        dev.smbus_write_byte_data(MD23_SPEED2, turn)?;
                                         Ok(())
                                     };
                                     match foo()
@@ -185,15 +184,15 @@ impl MD23Driver {
         return result;
     }
 
-    pub fn drive(self: &mut MD23Driver, speed: f32) -> Vec<State>
+    pub fn drive(self: &mut MD23Driver, speed: f32, turn: f32) -> Vec<State>
     {
-        self.outgoing.send(Message::Drive{speed: speed}).expect("thread error");
+        self.outgoing.send(Message::Drive{speed, turn}).expect("thread error");
         self.gather_state_messages()
     }
 
     pub fn stop(self: &mut MD23Driver) -> Vec<State>
     {
-        self.outgoing.send(Message::Drive{speed: 0.0}).expect("thread error");
+        self.outgoing.send(Message::Drive{speed: 0.0, turn: 0.0}).expect("thread error");
         self.gather_state_messages()
     }
 

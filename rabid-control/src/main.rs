@@ -63,6 +63,9 @@ fn main()
     let mut md23 = MD23Driver::new(3);
     let ticks = tick(Duration::from_millis(100));
     let axis_receiver = open_socket("tcp://0.0.0.0:5000").expect("Socket error");
+    let dead_zone = 10_000;
+    let mut speed = 0.0;
+    let mut turn = 0.0;
     loop {
         select! {
             recv(ticks) -> _ => {
@@ -78,15 +81,20 @@ fn main()
             {
                 let AxisMovement{ axis, value} = message.expect("no axis message");
                 if axis == 1 {
-                    let dead_zone = 10_000;
                     if value > dead_zone || value < -dead_zone {
-                        let speed = -(value as f32 / 32768.0);
-                        md23.drive(speed);
+                        speed = -(value as f32 / 32768.0);
                     } else {
-                        md23.stop();
+                        speed = 0.0;
                     }
-
                 }
+                if axis == 0 {
+                    if value > dead_zone || value < -dead_zone {
+                        turn = (value as f32 / 32768.0) / 2.5;
+                    } else {
+                        turn = 0.0;
+                    }
+                }
+                md23.drive(speed, turn);
                 println!("axis {} moves {}", axis, value);
             }
         }
