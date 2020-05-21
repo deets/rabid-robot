@@ -1,6 +1,8 @@
 extern crate nalgebra as na;
 use na::{Vector2, Rotation2};
 use std::fmt;
+use std::time::Duration;
+use libm::fmin;
 
 pub type Vector = Vector2<f64>;
 pub type Rotation = Rotation2<f64>;
@@ -54,7 +56,7 @@ pub struct CircleSegment
 }
 
 impl CircleSegment {
-    fn new(radius: f64, arc: f64) -> CircleSegment
+    pub fn new(radius: f64, arc: f64) -> CircleSegment
     {
         CircleSegment{radius, arc}
     }
@@ -183,9 +185,106 @@ impl PathSegment for CompoundPath
     }
 }
 
+// The main purpose of the Ramp is to map
+// a Duration and result in the distance
+// covered during this time. This while
+// maintaining an acceleration phase,
+// possibly a steady phase, and a
+// deceleration phase.
+//
+// Length is given in cm
+// Speed is given in cm/s
+// Acceleration in cm/s^2
+pub struct Ramp
+{
+    length: f64,
+    max_velocity: f64,
+    max_acceleration: f64,
+}
+
+impl Ramp
+{
+
+    fn segment_duration(&self)-> (f64, f64)
+    {
+        let mut full_speed_time = 0.0;
+        // this is the total time spent
+        // linearily accelerating until the inflection point
+        // and then linarily breaking until stop.
+        let mut ramp_time = (self.length / self.max_acceleration).sqrt() * 2.0;
+        // if we accelerate for one ramp time, and the resulting
+        // speed is higher than allowed, we must compose our
+        // ramp from three sections!
+        if (ramp_time / 2.0) * self.max_acceleration > self.max_velocity
+        {
+            // for starters, we assume that
+            // we can fully accelerate, meaning
+            // we spend
+            //   ramp_time = max_velocity / max_acceleration
+            // seconds accelerating, and the same
+            // amount decelerating. And we cover
+            //   ramp_length = ramp_time * max_velocity / 2.0
+            // centimeters in that time, because it's two
+            // triangles folded to make one square
+            // that is half as wide as the two ramps.
+            //     .           ____
+            //    /|\          |  /|
+            //   / | \    ->   | / |
+            //  /  |  \        |/  |
+            //  -------        -----
+            //
+            // so the rest must be spend at full speed.
+            ramp_time = (self.max_velocity / self.max_acceleration) * 2.0;
+            let ramp_length = ramp_time / 2.0 * self.max_velocity;
+            full_speed_time = (self.length - ramp_length) / self.max_velocity;
+        }
+        (ramp_time, full_speed_time)
+    }
+
+    fn total_duration(&self) -> Duration
+    {
+        let (ramp_time, full_speed_time) = self.segment_duration();
+        Duration::from_secs_f64(ramp_time + full_speed_time)
+    }
+
+    fn position_at_duration(&self, when: Duration) -> f64
+    {
+        let mut when = when.as_secs_f64();
+        let (ramp_time, full_speed_time) = self.segment_duration();
+        let duration = ramp_time + full_speed_time;
+        let first_ramp_time = ramp_time / 2.0;
+        match when {
+            when if duration <= when => {
+                self.length
+            },
+            when if when <= first_ramp_time => {
+                0.5 * self.max_acceleration * when.powf(2.0)
+            }
+            _ => {
+                // we first have to travel the whole acceleration ramp
+                let total_ramp_length = 0.5 * self.max_acceleration * first_ramp_time.powf(2.0);
+                let mut position = total_ramp_length;
+                when -= first_ramp_time;
+                // We drive for on full speed for a while.
+                // This can even be 0 if we don't have a ramp but
+                // just acc/decc
+                let full_speed_time = fmin(full_speed_time, when);
+                position += full_speed_time * self.max_velocity;
+                // if when was bigger than full_speed_time
+                // we are left with decelerating
+                when -=  full_speed_time;
+                if when > 0.0 {
+                    position += total_ramp_length - 0.5 * self.max_acceleration * (first_ramp_time - when).powf(2.0);
+                }
+                position
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::f64::consts::PI;
 
@@ -260,11 +359,125 @@ mod tests {
         compound_path.push(Box::new(straight));
         compound_path.push(Box::new(curve));
         compound_path.push(Box::new(straight2));
-        println!("{:?}", compound_path);
         assert_eq!(total, compound_path.length());
         let (pos, rot) = compound_path.at(1.0);
         assert!(equal_eps(&Vector::new(14.0, 5.0), &pos, 0.0001));
         assert_eq!(Rotation::new(PI / 2.0), rot);
     }
 
+    #[test]
+    fn ramp_duration()
+    {
+        // The robot turns 3 rps with 10cm
+        // wheel diameter. So a realistic speed
+        // is 90cm/s. I take a conservative third there.
+        let speed = 30.0;
+        // if we want to reach full speed withn 3 seconds,
+        // this means that we have 10cm/s^2 acceleration
+        let acceleration = 10.0;
+        let length = 500.0;
+        // this means we spend a total of six seconds
+        // accelerading/decelerating, and cover
+        // 6 * 30.0 / 2.0 -> 90.0 centimeters in this time.
+        // (two triangles make one rectangle!)
+        // This leaves us with 500.0 - 90.0 -> 410.0cm spent
+        // at 30.0 cm/s, for 13.6666 seconds.
+        // So total should 19.6666 seconds
+        let expectation = 19.666666666;
+        let ramp = Ramp{ length, max_velocity: speed, max_acceleration: acceleration };
+        assert_eq!(Duration::from_secs_f64(expectation), ramp.total_duration());
+    }
+
+    #[test]
+    fn ramp_duration_without_plateau()
+    {
+        // The robot turns 3 rps with 10cm
+        // wheel diameter. So a realistic speed
+        // is 90cm/s. I take a conservative third there.
+        let speed = 30.0;
+        // if we want to reach full speed withn 3 seconds,
+        // this means that we have 10cm/s^2 acceleration
+        let acceleration = 10.0;
+        let length = 90.0;
+        // this means we spend a total of six seconds
+        // accelerading/decelerating, and cover
+        // 6 * 30.0 / 2.0 -> 90.0 centimeters in this time.
+        // (two triangles make one rectangle!)
+        let expectation = 6.0;
+        let ramp = Ramp{ length, max_velocity: speed, max_acceleration: acceleration };
+        assert_eq!(Duration::from_secs_f64(expectation), ramp.total_duration());
+    }
+
+    #[test]
+    fn ramp_duration_with_acceleration_cut_short()
+    {
+        // The robot turns 3 rps with 10cm
+        // wheel diameter. So a realistic speed
+        // is 90cm/s. I take a conservative third there.
+        let speed = 30.0 as f64;
+        // if we want to reach full speed withn 3 seconds,
+        // this means that we have 10cm/s^2 acceleration
+        let acceleration = 10.0 as f64;
+        let length = 50.0;
+        // The area under the triangular acceleration
+        // is equal to
+        //
+        // f(t) = 0.5*at^2
+        //
+        // and we have two of these ramps, meaning that
+        // we need to solve
+        // 2*f(t * 2) = distance
+        //
+        // This results in
+        //
+        // t = sqrt(distance/acceleration) * 2
+        //
+        // as the duration of the ramp.
+        let expectation = (length / acceleration).sqrt() * 2.0;
+        let ramp = Ramp{ length, max_velocity: speed, max_acceleration: acceleration };
+        assert_eq!(Duration::from_secs_f64(expectation), ramp.total_duration());
+    }
+
+    #[test]
+    fn ramp_position_at_duration_zero()
+    {
+        let speed = 30.0;
+        let acceleration = 10.0;
+        let length = 180.0;
+        let ramp = Ramp{ length, max_velocity: speed, max_acceleration: acceleration };
+
+        assert_eq!(0.0, ramp.position_at_duration(Duration::from_secs_f64(0.0)));
+    }
+
+    #[test]
+    fn ramp_position_at_and_over_full_duration()
+    {
+        let speed = 30.0;
+        let acceleration = 10.0;
+        let length = 180.0;
+        let ramp = Ramp{ length, max_velocity: speed, max_acceleration: acceleration };
+        assert_eq!(length, ramp.position_at_duration(ramp.total_duration()));
+        assert_eq!(length, ramp.position_at_duration(ramp.total_duration().mul_f64(2.0)));
+    }
+
+    #[test]
+    fn ramp_position_at_half_duration()
+    {
+        let speed = 30.0;
+        let acceleration = 10.0;
+        let length = 180.0;
+        let ramp = Ramp{ length, max_velocity: speed, max_acceleration: acceleration };
+        assert_eq!(length / 2.0, ramp.position_at_duration(ramp.total_duration().mul_f64(0.5)));
+    }
+
+    #[test]
+    fn ramp_position_shortly_before_end()
+    {
+        let speed = 30.0;
+        let acceleration = 10.0;
+        let length = 180.0;
+        let decl_size = 0.5 * acceleration * (1.0_f64).powf(2.0);
+        let ramp = Ramp{ length, max_velocity: speed, max_acceleration: acceleration };
+        assert_eq!(length - decl_size, ramp.position_at_duration(ramp.total_duration() - Duration::from_secs_f64(1.0)));
+    }
 }

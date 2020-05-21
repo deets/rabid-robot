@@ -9,6 +9,7 @@ mod md23;
 use md23::{MD23Driver, State};
 
 mod path;
+mod twowheel;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct AxisMovement {
