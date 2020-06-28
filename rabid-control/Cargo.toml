@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Diez B. Roggisch <deets@web.de>"]
 edition = "2018"
 
+[lib]
+name = "rr"
+path = "src/lib.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

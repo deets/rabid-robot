@@ -3,6 +3,7 @@ use na::{Vector2, Rotation2};
 use std::fmt;
 use std::time::Duration;
 use libm::fmin;
+use serde::{Deserialize, Serialize};
 
 pub type Vector = Vector2<f64>;
 pub type Rotation = Rotation2<f64>;
@@ -23,13 +24,14 @@ pub trait PathSegment {
     fn at(&self, position: f64) -> (Vector, Rotation);
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct LinearSegment
 {
     length: f64
 }
 
 impl LinearSegment {
-    fn new(length: f64) -> LinearSegment
+    pub fn new(length: f64) -> LinearSegment
     {
         LinearSegment{length: length}
     }
@@ -48,7 +50,7 @@ impl PathSegment for LinearSegment
     }
 }
 
-
+#[derive(Serialize, Deserialize)]
 pub struct CircleSegment
 {
     radius: f64,
@@ -115,7 +117,7 @@ pub struct CompoundPath
 
 impl CompoundPath {
 
-    fn new() -> CompoundPath
+    pub fn new() -> CompoundPath
     {
         CompoundPath{segments: Vec::new()}
     }
